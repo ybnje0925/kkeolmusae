@@ -46,6 +46,7 @@ export interface Position {
 
 export interface InvestmentDecision {
   card: AnonymousCard;
+  roundIndex: number;
   percent: number;
   availableCash: number;
   investedAmount: number;

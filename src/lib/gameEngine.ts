@@ -24,14 +24,19 @@ function isRiskCard(card: GameCard): boolean {
 }
 
 function canAdd(card: GameCard, selected: GameCard[]): boolean {
-  const names = new Set(selected.map((item) => item.revealName));
-  const years = new Set(selected.map((item) => item.entryDate.slice(0, 4)));
-  return !names.has(card.revealName) && !years.has(card.entryDate.slice(0, 4));
+  return !selected.some((item) => item.ticker === card.ticker);
 }
 
-export function selectGameCards(cards: GameCard[], book: PriceBook, count = 8): AnonymousCard[] {
+export function selectGameRounds(
+  cards: GameCard[],
+  book: PriceBook,
+  roundCount = 8,
+  cardsPerRound = 3,
+): AnonymousCard[][] {
+  const count = roundCount * cardsPerRound;
   const available = cards.filter((card) => hasUsablePrice(book, card.ticker, card.entryDate));
-  if (available.length < count) throw new Error("플레이 가능한 가격 데이터가 부족합니다.");
+  const availableTickers = new Set(available.map((card) => card.ticker));
+  if (availableTickers.size < count) throw new Error("서로 다른 플레이 가능 자산의 가격 데이터가 부족합니다.");
 
   const selected: GameCard[] = [];
   const addFrom = (candidates: GameCard[]) => {
@@ -39,9 +44,12 @@ export function selectGameCards(cards: GameCard[], book: PriceBook, count = 8): 
     if (candidate) selected.push(candidate);
   };
 
-  addFrom(available.filter((card) => card.assetClass !== "stock"));
-  addFrom(available.filter(isRiskCard));
-  addFrom(available.filter((card) => isRiskCard(card) && !selected.includes(card)));
+  for (let index = 0; index < 3; index += 1) {
+    addFrom(available.filter((card) => card.assetClass !== "stock"));
+  }
+  for (let index = 0; index < 6; index += 1) {
+    addFrom(available.filter(isRiskCard));
+  }
 
   for (const card of shuffle(available)) {
     if (selected.length >= count) break;
@@ -51,17 +59,18 @@ export function selectGameCards(cards: GameCard[], book: PriceBook, count = 8): 
   if (selected.length < count) {
     for (const card of shuffle(available)) {
       if (selected.length >= count) break;
-      if (!selected.includes(card) && !selected.some((item) => item.revealName === card.revealName)) {
-        selected.push(card);
-      }
+      if (!selected.includes(card) && canAdd(card, selected)) selected.push(card);
     }
   }
 
   const numbers = shuffle(Array.from({ length: 90 }, (_, index) => index + 1));
-  return selected
+  const anonymousCards = selected
     .slice(0, count)
     .sort((a, b) => a.entryDate.localeCompare(b.entryDate))
     .map((card, index) => ({ ...card, anonymousNumber: numbers[index] }));
+  return Array.from({ length: roundCount }, (_, roundIndex) =>
+    anonymousCards.slice(roundIndex * cardsPerRound, (roundIndex + 1) * cardsPerRound),
+  );
 }
 
 export function createPosition(
@@ -69,11 +78,13 @@ export function createPosition(
   percent: number,
   cash: number,
   book: PriceBook,
+  roundIndex = 0,
 ): { position?: Position; decision: InvestmentDecision; remainingCash: number } {
   const entry = getEntryPrice(book, card.ticker, card.entryDate);
   const investedAmount = cash * (percent / 100);
   const decision: InvestmentDecision = {
     card,
+    roundIndex,
     percent,
     availableCash: cash,
     investedAmount,

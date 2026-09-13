@@ -8,7 +8,8 @@ function pickArchetype(
   settleCount: number,
   totalReturn: number,
 ) {
-  const average = decisions.reduce((sum, item) => sum + item.percent, 0) / Math.max(decisions.length, 1);
+  const roundsPlayed = new Set(decisions.map((item) => item.roundIndex)).size;
+  const average = decisions.reduce((sum, item) => sum + item.percent, 0) / Math.max(roundsPlayed, 1);
   const counts = new Map<number, number>();
   decisions.forEach((item) => counts.set(item.percent, (counts.get(item.percent) ?? 0) + 1));
   const lossHeavy = settlements.filter((item) => item.investmentPercent === 100 && item.finalReturnPercent < -20).length;

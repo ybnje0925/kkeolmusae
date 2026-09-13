@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import cardPoolData from "@/data/kkeolmusae_card_pool_v1.json";
 import priceData from "@/data/prices/index.json";
 import type {
@@ -13,7 +13,7 @@ import type {
   SettledInvestment,
 } from "@/types/game";
 import { analyzeResult } from "@/lib/resultAnalysis";
-import { createPosition, latestDateForTicker, selectGameCards, settlePosition } from "@/lib/gameEngine";
+import { createPosition, latestDateForTicker, selectGameRounds, settlePosition } from "@/lib/gameEngine";
 import { valuePosition, valuePositionAtLatest } from "@/lib/portfolio";
 import { getYear } from "@/lib/formatters";
 import { IntroScreen } from "./IntroScreen";
@@ -30,16 +30,17 @@ const pool = cardPoolData as CardPool;
 const priceBook = priceData as PriceBook;
 const STARTING_CASH = pool.game.startingCashKRW;
 const TOTAL_ROUNDS = pool.game.cardsPerGame;
+const CARDS_PER_ROUND = 3;
 
 export function Game() {
   const [phase, setPhase] = useState<GamePhase>("INTRO");
-  const [cards, setCards] = useState<AnonymousCard[]>([]);
+  const [rounds, setRounds] = useState<AnonymousCard[][]>([]);
   const [roundIndex, setRoundIndex] = useState(0);
   const [cash, setCash] = useState(STARTING_CASH);
   const [positions, setPositions] = useState<Position[]>([]);
   const [decisions, setDecisions] = useState<InvestmentDecision[]>([]);
   const [settlements, setSettlements] = useState<SettledInvestment[]>([]);
-  const [lastDecision, setLastDecision] = useState<InvestmentDecision>();
+  const [lastDecisions, setLastDecisions] = useState<InvestmentDecision[]>([]);
   const [reviewIndex, setReviewIndex] = useState(0);
   const [activeReveal, setActiveReveal] = useState<SettledInvestment>();
   const [finalReveals, setFinalReveals] = useState<SettledInvestment[]>([]);
@@ -47,24 +48,34 @@ export function Game() {
   const [settleCount, setSettleCount] = useState(0);
   const [error, setError] = useState<string>();
 
-  const currentCard = cards[roundIndex];
-  const currentYear = currentCard ? getYear(currentCard.entryDate) : "현재";
+  const currentRound = rounds[roundIndex] ?? [];
+  const currentRoundStart = currentRound[0];
+  const currentRoundEnd = currentRound[currentRound.length - 1];
+  const currentYear = currentRoundStart
+    ? getYear(currentRoundStart.entryDate) === getYear(currentRoundEnd.entryDate)
+      ? getYear(currentRoundStart.entryDate)
+      : `${getYear(currentRoundStart.entryDate)}–${getYear(currentRoundEnd.entryDate)}`
+    : "현재";
   const result = useMemo(() => {
     if (phase !== "RESULT") return undefined;
     return analyzeResult(STARTING_CASH, cash, decisions, settlements, holdCount, settleCount, priceBook);
   }, [phase, cash, decisions, settlements, holdCount, settleCount]);
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [phase, roundIndex, reviewIndex]);
+
   const startGame = () => {
     try {
-      const nextCards = selectGameCards(pool.cards, priceBook, TOTAL_ROUNDS);
-      setCards(nextCards);
+      const nextRounds = selectGameRounds(pool.cards, priceBook, TOTAL_ROUNDS, CARDS_PER_ROUND);
+      setRounds(nextRounds);
       setRoundIndex(0);
       setCash(STARTING_CASH);
       setPositions([]);
       setDecisions([]);
       setSettlements([]);
       setFinalReveals([]);
-      setLastDecision(undefined);
+      setLastDecisions([]);
       setHoldCount(0);
       setSettleCount(0);
       setError(undefined);
@@ -75,20 +86,28 @@ export function Game() {
   };
 
   const enterRound = () => {
-    if (!currentCard) return;
-    const valued = positions.map((position) => valuePosition(position, currentCard.entryDate, priceBook));
+    if (!currentRoundStart) return;
+    const valued = positions.map((position) => valuePosition(position, currentRoundStart.entryDate, priceBook));
     setPositions(valued);
     setReviewIndex(0);
     setPhase(valued.length > 0 ? "REVIEW_HOLDINGS" : "NEW_INVESTMENT");
   };
 
-  const invest = (percent: number) => {
-    if (!currentCard) return;
-    const next = createPosition(currentCard, percent, cash, priceBook);
-    setCash(next.remainingCash);
-    if (next.position) setPositions((current) => [...current, next.position!]);
-    setDecisions((current) => [...current, next.decision]);
-    setLastDecision(next.decision);
+  const invest = (allocations: number[]) => {
+    if (currentRound.length !== CARDS_PER_ROUND) return;
+    const totalPercent = allocations.reduce((sum, percent) => sum + percent, 0);
+    if (totalPercent > 100) return;
+
+    const selections = currentRound.map((card, index) =>
+      createPosition(card, allocations[index] ?? 0, cash, priceBook, roundIndex),
+    );
+    const newPositions = selections.flatMap((selection) => selection.position ? [selection.position] : []);
+    const roundDecisions = selections.map((selection) => selection.decision);
+    const investedAmount = roundDecisions.reduce((sum, decision) => sum + decision.investedAmount, 0);
+    setCash(cash - investedAmount);
+    setPositions((current) => [...current, ...newPositions]);
+    setDecisions((current) => [...current, ...roundDecisions]);
+    setLastDecisions(roundDecisions);
     setPhase("INVESTMENT_CONFIRM");
   };
 
@@ -106,7 +125,7 @@ export function Game() {
   };
 
   const leaveConfirmation = () => {
-    if (roundIndex === cards.length - 1) {
+    if (roundIndex === rounds.length - 1) {
       finishTimeTravel();
       return;
     }
@@ -123,8 +142,8 @@ export function Game() {
 
   const settleCurrentPosition = () => {
     const position = positions[reviewIndex];
-    if (!position || !currentCard) return;
-    const settlement = settlePosition(position, currentCard.entryDate);
+    if (!position || !currentRoundStart) return;
+    const settlement = settlePosition(position, currentRoundStart.entryDate);
     const remaining = positions.filter((item) => item.id !== position.id);
     setPositions(remaining);
     setCash((current) => current + settlement.settledValue);
@@ -147,7 +166,7 @@ export function Game() {
     );
   }
 
-  if (!currentCard) return null;
+  if (!currentRoundStart) return null;
 
   return (
     <div className="game-shell">
@@ -164,17 +183,17 @@ export function Game() {
 
       {phase === "ROUND_TRANSITION" ? (
         <YearTransition
-          fromDate={roundIndex > 0 ? cards[roundIndex - 1].entryDate : undefined}
-          toDate={currentCard.entryDate}
+          fromDate={roundIndex > 0 ? rounds[roundIndex - 1].at(-1)?.entryDate : undefined}
+          toDate={currentRoundStart.entryDate}
           onContinue={enterRound}
         />
       ) : null}
       {phase === "REVIEW_HOLDINGS" && positions[reviewIndex] ? (
         <HoldingReviewCard position={positions[reviewIndex]} index={reviewIndex} total={positions.length} onHold={holdPosition} onSettle={settleCurrentPosition} />
       ) : null}
-      {phase === "NEW_INVESTMENT" ? <OpportunityCard card={currentCard} cash={cash} onInvest={invest} /> : null}
-      {phase === "INVESTMENT_CONFIRM" && lastDecision ? (
-        <InvestmentConfirm decision={lastDecision} remainingCash={cash} isLast={roundIndex === cards.length - 1} onContinue={leaveConfirmation} />
+      {phase === "NEW_INVESTMENT" ? <OpportunityCard key={roundIndex} cards={currentRound} cash={cash} onInvest={invest} /> : null}
+      {phase === "INVESTMENT_CONFIRM" && lastDecisions.length > 0 ? (
+        <InvestmentConfirm decisions={lastDecisions} remainingCash={cash} isLast={roundIndex === rounds.length - 1} onContinue={leaveConfirmation} />
       ) : null}
       {phase === "FINAL_SETTLEMENT" ? <FinalSettlement settlements={finalReveals} onContinue={() => setPhase("RESULT")} /> : null}
       {phase === "RESULT" && result ? <ResultScreen result={result} startingCash={STARTING_CASH} onRestart={startGame} /> : null}
